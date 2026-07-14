@@ -8,6 +8,7 @@ from translator import Translator
 # -------------------------------------------------------------------------
 # WORKER 1: SPEECH RECOGNITION (ASR)
 # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 class ASRWorker(QThread):
     progress_signal = Signal(int)
     status_signal = Signal(str)
@@ -15,11 +16,14 @@ class ASRWorker(QThread):
     chunk_signal = Signal(str, str, str)
     finished_signal = Signal(bool, str)
 
-    def __init__(self, video_path, source_lang, output_dir):
+    def __init__(self, video_path, source_lang, output_dir, chunk_duration=6.0, silence_thresh=-35, min_silence_len=500):
         super().__init__()
         self.video_path = video_path
         self.source_lang = source_lang
         self.output_dir = output_dir
+        self.chunk_duration = chunk_duration
+        self.silence_thresh = silence_thresh
+        self.min_silence_len = min_silence_len
         self._is_running = True
 
     def stop(self):
@@ -33,6 +37,9 @@ class ASRWorker(QThread):
         return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
     def run(self):
+        from pydub import AudioSegment
+        from pydub.silence import detect_nonsilent
+        
         self.status_signal.emit("កំពុងទាញយកសំឡេង...")
         self.progress_signal.emit(5)
         
@@ -53,45 +60,77 @@ class ASRWorker(QThread):
             video_clip.audio.write_audiofile(temp_full_wav, codec="pcm_s16le", fps=16000, logger=None)
             video_clip.close()
 
+            # Perform Voice Activity Detection (VAD) using pydub
+            self.log_signal.emit("[ASR] 🔍 កំពុងវិភាគស្វែងរកផ្នែកនិយាយ (VAD)...")
+            audio = AudioSegment.from_wav(temp_full_wav)
+            
+            # Detect raw speech intervals
+            raw_intervals = detect_nonsilent(audio, min_silence_len=self.min_silence_len, silence_thresh=self.silence_thresh)
+            
+            chunk_duration_ms = int(self.chunk_duration * 1000)
+            final_intervals = []
+
+            if not raw_intervals:
+                # Fallback to fixed chunking if no silences are found
+                self.log_signal.emit("[ASR] ⚠️ មិនអាចរកឃើញផ្នែកស្ងាត់ទេ (ប្រើប្រាស់ Fixed Chunking ជំនួស)...")
+                start_ms = 0
+                total_duration_ms = int(duration * 1000)
+                while start_ms < total_duration_ms:
+                    end_ms = min(start_ms + chunk_duration_ms, total_duration_ms)
+                    if (end_ms - start_ms) >= 500:
+                        final_intervals.append((start_ms, end_ms))
+                    start_ms = end_ms
+            else:
+                for start_ms, end_ms in raw_intervals:
+                    duration_ms = end_ms - start_ms
+                    if duration_ms > chunk_duration_ms:
+                        # Sub-split long speech segments to match max segment duration
+                        sub_start = start_ms
+                        while sub_start < end_ms:
+                            sub_end = min(sub_start + chunk_duration_ms, end_ms)
+                            if (sub_end - sub_start) >= 500:
+                                final_intervals.append((sub_start, sub_end))
+                            sub_start = sub_end
+                    else:
+                        if duration_ms >= 500:
+                            final_intervals.append((start_ms, end_ms))
+
             r = sr.Recognizer()
-            chunk_duration = 3.0
-            start_time = 0.0
-            chunk_index = 0
+            total_segments = len(final_intervals)
+            self.log_signal.emit(f"[ASR] 🎙️ រកឃើញផ្នែកនិយាយចំនួន {total_segments} ផ្នែកសម្រាប់ស្កេន។")
 
-            with sr.AudioFile(temp_full_wav) as source:
-                while start_time < duration:
-                    if not self._is_running:
-                        break
-                    
-                    rem = duration - start_time
-                    if rem < 0.5:
-                        break
-                        
-                    current_chunk_dur = min(chunk_duration, rem)
-                    end_time = start_time + current_chunk_dur
-                    
-                    self.log_signal.emit(f"[ASR] 🎙️ កំពុងស្កេនសំឡេងចន្លោះ {self.format_time(start_time)} - {self.format_time(end_time)}...")
-                    
-                    audio_data = r.record(source, duration=current_chunk_dur)
-                    
-                    recognized_text = ""
-                    try:
-                        recognized_text = r.recognize_google(audio_data, language=self.source_lang)
-                        self.log_signal.emit(f"[ASR] 🗣️ Chunk {chunk_index+1}: \"{recognized_text}\"")
-                    except sr.UnknownValueError:
-                        self.log_signal.emit(f"[ASR] 🔇 គ្មានការនិយាយនៅ Chunk {chunk_index+1} ទេ។")
-                    except Exception as err:
-                        self.log_signal.emit(f"[ASR ERROR] ❌ កំហុសស្កេន៖ {str(err)}")
+            # Open audio file once to run calibrate
+            with sr.AudioFile(temp_full_wav) as calibration_source:
+                r.adjust_for_ambient_noise(calibration_source, duration=min(1.0, duration))
 
-                    start_str = self.format_time(start_time)
-                    end_str = self.format_time(end_time)
-                    self.chunk_signal.emit(start_str, end_str, recognized_text)
+            for idx, (start_ms, end_ms) in enumerate(final_intervals):
+                if not self._is_running:
+                    break
+                
+                start_sec = start_ms / 1000.0
+                end_sec = end_ms / 1000.0
+                current_chunk_dur = end_sec - start_sec
+                
+                self.log_signal.emit(f"[ASR] 🎙️ កំពុងស្កេនផ្នែកទី {idx+1}/{total_segments} ({self.format_time(start_sec)} - {self.format_time(end_sec)})...")
+                
+                with sr.AudioFile(temp_full_wav) as source:
+                    audio_data = r.record(source, offset=start_sec, duration=current_chunk_dur)
+                
+                recognized_text = ""
+                try:
+                    recognized_text = r.recognize_google(audio_data, language=self.source_lang)
+                    self.log_signal.emit(f"[ASR] 🗣️ ផ្នែកទី {idx+1}: \"{recognized_text}\"")
+                except sr.UnknownValueError:
+                    self.log_signal.emit(f"[ASR] 🔇 គ្មានការនិយាយនៅផ្នែកទី {idx+1} ទេ។")
+                except Exception as err:
+                    self.log_signal.emit(f"[ASR ERROR] ❌ កំហុសស្កេន៖ {str(err)}")
 
-                    progress_pct = int(5 + (start_time / duration) * 90)
-                    self.progress_signal.emit(progress_pct)
-                    
-                    start_time += current_chunk_dur
-                    chunk_index += 1
+                start_str = self.format_time(start_sec)
+                end_str = self.format_time(end_sec)
+                self.chunk_signal.emit(start_str, end_str, recognized_text)
+
+                progress_pct = int(5 + ((idx + 1) / total_segments) * 95)
+                self.progress_signal.emit(progress_pct)
 
             if os.path.exists(temp_full_wav):
                 os.remove(temp_full_wav)

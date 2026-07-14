@@ -185,6 +185,41 @@ class ToolVideoKH(QMainWindow):
         self.fx_tabs.addTab(blur_tab, "Blur / ម្សិល")
         self.fx_tabs.addTab(text_tab, "Text Overlay")
         self.fx_tabs.addTab(logo_tab, "Logo Settings")
+        
+        # ASR/VAD Settings Tab
+        asr_tab = QWidget()
+        asr_layout = QVBoxLayout(asr_tab)
+        
+        dur_layout = QHBoxLayout()
+        dur_layout.addWidget(QLabel("Segment Max Duration (s):"))
+        self.sb_chunk_dur = QSpinBox()
+        self.sb_chunk_dur.setRange(2, 30)
+        self.sb_chunk_dur.setValue(8) # Default to 8s
+        self.sb_chunk_dur.setStyleSheet("color: white; background-color: #00243a;")
+        dur_layout.addWidget(self.sb_chunk_dur)
+        asr_layout.addLayout(dur_layout)
+        
+        thresh_layout = QHBoxLayout()
+        thresh_layout.addWidget(QLabel("Silence Threshold (dB):"))
+        self.sb_silence_thresh = QSpinBox()
+        self.sb_silence_thresh.setRange(-60, -10)
+        self.sb_silence_thresh.setValue(-32) # Default to -32dB
+        self.sb_silence_thresh.setStyleSheet("color: white; background-color: #00243a;")
+        thresh_layout.addWidget(self.sb_silence_thresh)
+        asr_layout.addLayout(thresh_layout)
+        
+        sil_len_layout = QHBoxLayout()
+        sil_len_layout.addWidget(QLabel("Min Silence Length (ms):"))
+        self.sb_min_silence = QSpinBox()
+        self.sb_min_silence.setRange(100, 3000)
+        self.sb_min_silence.setSingleStep(100)
+        self.sb_min_silence.setValue(500) # Default to 500ms
+        self.sb_min_silence.setStyleSheet("color: white; background-color: #00243a;")
+        sil_len_layout.addWidget(self.sb_min_silence)
+        asr_layout.addLayout(sil_len_layout)
+        
+        self.fx_tabs.addTab(asr_tab, "ASR Settings")
+
         center_layout.addWidget(self.fx_tabs)
         workspace_layout.addWidget(center_panel, stretch=2)
 
@@ -354,7 +389,18 @@ class ToolVideoKH(QMainWindow):
         selected_lang_text = self.cb_source_lang.currentText()
         source_lang = lang_map.get(selected_lang_text, "en-US")
 
-        self.worker_thread = ASRWorker(video_path, source_lang, self.output_directory)
+        chunk_dur = self.sb_chunk_dur.value()
+        silence_thresh = self.sb_silence_thresh.value()
+        min_silence = self.sb_min_silence.value()
+
+        self.worker_thread = ASRWorker(
+            video_path=video_path,
+            source_lang=source_lang,
+            output_dir=self.output_directory,
+            chunk_duration=chunk_dur,
+            silence_thresh=silence_thresh,
+            min_silence_len=min_silence
+        )
         self.worker_thread.progress_signal.connect(self.update_ui_progress)
         self.worker_thread.status_signal.connect(self.update_ui_status)
         self.worker_thread.log_signal.connect(self.append_ui_log)
