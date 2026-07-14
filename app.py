@@ -1,173 +1,19 @@
 import sys
 import os
-import urllib.request
-import urllib.parse
-import json
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QSize, QUrl
+import signal
+from PySide6.QtCore import Qt, QSize, QUrl
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QPushButton, QComboBox, QProgressBar,
+    QLabel, QPushButton, QComboBox, QProgressBar,
     QFileDialog, QListWidget, QListWidgetItem, QGroupBox, QSlider, QSpinBox, 
-    QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit, QMessageBox, QTabWidget, QSizePolicy
+    QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit, QMessageBox, QTabWidget
 )
 from PySide6.QtGui import QFont, QColor, QPalette
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtMultimediaWidgets import QVideoWidget
 
-# នាំចូល MoviePy ជំនាន់ថ្មី 2.x
-from moviepy import VideoFileClip, AudioFileClip
-from gtts import gTTS
-
-# -------------------------------------------------------------------------
-# REAL AI TRANSLATION ENGINE
-# -------------------------------------------------------------------------
-class Translator:
-    def translate(self, text, dest='km'):
-        try:
-            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={dest}&dt=t&q={urllib.parse.quote(text)}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode())
-                translated_text = "".join([sentence[0] for sentence in data[0]])
-                return type('obj', (object,), {'text': translated_text})()
-        except:
-            return type('obj', (object,), {'text': text})()
-
-# -------------------------------------------------------------------------
-# REAL AI TRANSLATION & EXPORT WORKER THREAD
-# -------------------------------------------------------------------------
-class RealVoiceTranslatorWorker(QThread):
-    progress_signal = Signal(int)        
-    status_signal = Signal(str)          
-    log_signal = Signal(str)             
-    finished_signal = Signal(bool, str)  
-
-    def __init__(self, video_paths, output_dir, voice_gender="Male", mode="Export Single"):
-        super().__init__()
-        self.video_paths = video_paths
-        self.output_dir = output_dir
-        self.voice_gender = voice_gender  
-        self.mode = mode
-        self._is_running = True
-        self.translator = Translator()
-
-    def stop(self):
-        self._is_running = False
-
-    def run(self):
-        if not self.video_paths:
-            self.finished_signal.emit(False, "គ្មានវីដេអូក្នុងបញ្ជីសម្រាប់ការកែច្នៃទេ។")
-            return
-
-        os.makedirs(self.output_dir, exist_ok=True)
-        total_videos = len(self.video_paths)
-
-        for index, video_path in enumerate(self.video_paths):
-            if not self._is_running:
-                self.finished_signal.emit(False, "ដំណើរការត្រូវបានបញ្ឈប់។")
-                return
-
-            video_name = os.path.basename(video_path)
-            name_without_ext = os.path.splitext(video_name)[0]
-            output_video_path = os.path.join(self.output_dir, f"{name_without_ext}_KH_Version.mp4")
-            temp_audio_kh = os.path.join(self.output_dir, f"temp_{name_without_ext}_kh.mp3")
-
-            try:
-                self.status_signal.emit(f"កំពុងបកប្រែ ({index+1}/{total_videos}): {video_name}")
-                self.progress_signal.emit(10)
-
-                self.log_signal.emit(f"[AUDIO] 🎬 កំពុងអានទិន្នន័យវីដេអូ: {video_name}...")
-                video_clip = VideoFileClip(video_path)
-                
-                if not self._is_running: return
-                self.progress_signal.emit(30)
-
-                text_to_speak = "សូមស្វាគមន៍មកកាន់វីដេអូដែលបានបកប្រែជាភាសាខ្មែរដោយជោគជ័យ។ ប្រព័ន្ធបានបញ្ចូលសំឡេងរាយការណ៍រួចរាល់។"
-                self.log_signal.emit("[AI TRANSLATE] 🤖 កំពុងបកប្រែខ្លឹមសារសំឡេងទៅជាភាសាខ្មែរតាមរយៈ AI...")
-                
-                if not self._is_running: return
-                self.progress_signal.emit(50)
-
-                self.log_signal.emit("[TTS] 🎙️ កំពុងបង្កើតសំឡេងនិយាយភាសាខ្មែរ (Khmer Text-to-Speech)...")
-                tts = gTTS(text=text_to_speak, lang='km', slow=False)
-                tts.save(temp_audio_kh)
-                
-                if not self._is_running: return
-                self.progress_signal.emit(70)
-
-                self.log_signal.emit("[EXPORT] 🎥 កំពុង Render ផ្គុំសំឡេងខ្មែរចូលទៅក្នុងវីដេអូថ្មី...")
-                kh_audio_clip = AudioFileClip(temp_audio_kh)
-                
-                video_clip.audio = kh_audio_clip
-                video_clip.write_videofile(output_video_path, codec="libx264", audio_codec="aac", logger=None)
-                
-                video_clip.close()
-                kh_audio_clip.close()
-                
-                if os.path.exists(temp_audio_kh):
-                    os.remove(temp_audio_kh)
-
-                self.progress_signal.emit(100)
-                self.log_signal.emit(f"[SUCCESS] 🎉 បាន Export រួចរាល់: {output_video_path}\n")
-
-                if self.mode == "Export Single":
-                    break 
-
-            except Exception as e:
-                self.log_signal.emit(f"[ERROR] ❌ មានបញ្ហាត្រង់: {str(e)}")
-                self.finished_signal.emit(False, f"បរាជ័យលើវីដេអូ {video_name}: {str(e)}")
-                return
-
-        self.finished_signal.emit(True, f"ដំណើរការកម្មវិធីជោគជ័យ! វីដេអូត្រូវបានរក្សាទុកក្នុងថត៖\n{self.output_dir}")
-
-
-# -------------------------------------------------------------------------
-# MAIN UI WINDOW CLASS
-# -------------------------------------------------------------------------
-class VideoWidget916(QVideoWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    def hasHeightForWidth(self): return True
-    def heightForWidth(self, width): return int(width * 16 / 9)
-    def sizeHint(self): return QSize(240, int(240 * 16 / 9))
-
-class VideoListWidgetItem(QWidget):
-    def __init__(self, file_path, parent=None):
-        super().__init__(parent)
-        self.file_path = file_path
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(10)
-
-        self.lbl_thumbnail = QLabel("🎬")
-        self.lbl_thumbnail.setFixedSize(65, 40)
-        self.lbl_thumbnail.setStyleSheet("background-color: #001a2b; border: 1px solid #00bcd4; border-radius: 3px;")
-        self.lbl_thumbnail.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.lbl_thumbnail)
-
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(2)
-        
-        file_name = os.path.basename(file_path)
-        self.lbl_name = QLabel(file_name)
-        self.lbl_name.setFont(QFont("Arial", 9, QFont.Bold))
-        self.lbl_name.setStyleSheet("color: white;")
-        
-        try:
-            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            info_text = f"{file_size_mb:.1f} MB | MP4"
-        except:
-            info_text = "Unknown Size"
-            
-        self.lbl_info = QLabel(info_text)
-        self.lbl_info.setFont(QFont("Arial", 8))
-        self.lbl_info.setStyleSheet("color: #8ab4f8;")
-        
-        text_layout.addWidget(self.lbl_name)
-        text_layout.addWidget(self.lbl_info)
-        layout.addLayout(text_layout)
-        layout.addStretch()
+# Import project files
+from widgets import VideoWidget916, VideoListWidgetItem
+from workers import ASRWorker, TranslationWorker, ExportWorker
 
 class ToolVideoKH(QMainWindow):
     def __init__(self):
@@ -215,16 +61,31 @@ class ToolVideoKH(QMainWindow):
         top_layout.addWidget(app_title)
 
         self.btn_add_top = QPushButton("Add Video")
-        self.btn_batch_top = QPushButton("Start Auto Batch")
+        self.btn_recognize = QPushButton("Auto Recognize Voice")
         self.btn_translate_top = QPushButton("Translate")
         
         btn_style = "QPushButton { background-color: #004369; color: white; border: 1px solid #006fa3; border-radius: 4px; font-weight: bold; } QPushButton:hover { background-color: #005b8f; border: 1px solid #00bcd4; }"
-        for btn in [self.btn_add_top, self.btn_batch_top, self.btn_translate_top]:
-            btn.setFixedSize(125, 36)
+        for btn in [self.btn_add_top, self.btn_recognize, self.btn_translate_top]:
+            btn.setFixedSize(170 if btn == self.btn_recognize else 125, 36)
             btn.setStyleSheet(btn_style)
             top_layout.addWidget(btn)
         
-        self.btn_batch_top.setStyleSheet("QPushButton { background-color: #f57c00; color: white; border-radius: 4px; font-weight: bold; } QPushButton:hover { background-color: #ff9800; }")
+        self.btn_recognize.setStyleSheet("QPushButton { background-color: #f57c00; color: white; border-radius: 4px; font-weight: bold; } QPushButton:hover { background-color: #ff9800; }")
+
+        self.cb_source_lang = QComboBox()
+        self.cb_source_lang.addItems([
+            "Original: English",
+            "Original: Chinese",
+            "Original: Thai",
+            "Original: Vietnamese",
+            "Original: French",
+            "Original: Spanish",
+            "Original: Japanese",
+            "Original: Korean"
+        ])
+        self.cb_source_lang.setFixedSize(160, 36)
+        self.cb_source_lang.setStyleSheet("QComboBox { background-color: #00243a; color: white; padding-left: 8px; border: 1px solid #005b8f; }")
+        top_layout.addWidget(self.cb_source_lang)
 
         self.cb_voice = QComboBox()
         self.cb_voice.addItems(["Voice Auto Male", "Voice Auto Female"])
@@ -248,7 +109,7 @@ class ToolVideoKH(QMainWindow):
         left_panel = QGroupBox("វីដេអូដើម (Source Video)")
         left_panel.setStyleSheet("QGroupBox { color: white; font-weight: bold; font-size: 11pt; border: 1px solid #005b8f; margin-top: 10px; }")
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(10, 20, 10, 10) # បន្ថែម Margin ខាងលើកុំឱ្យជាន់ចំណងជើង
+        left_layout.setContentsMargins(10, 20, 10, 10)
         
         self.video_list_widget = QListWidget()
         self.video_list_widget.setMaximumHeight(180)
@@ -327,29 +188,27 @@ class ToolVideoKH(QMainWindow):
         center_layout.addWidget(self.fx_tabs)
         workspace_layout.addWidget(center_panel, stretch=2)
 
-        # [RIGHT] - Logs & Subtitle (កន្លែងដែលបាត់អក្សរ)
+        # [RIGHT] - Logs & Subtitle
         right_panel = QVBoxLayout()
         
-        # ប្រអប់ Log ខាងលើ (កែសម្រួល CSS និង Margin ដើម្បីកុំឱ្យបាត់អក្សរ)
         preview_box = QGroupBox("Auto Preview / Status Monitoring")
         preview_box.setStyleSheet("QGroupBox { color: #00bcd4; font-weight: bold; font-size: 11pt; border: 1px solid #005b8f; margin-top: 10px; }")
         pb_layout = QVBoxLayout(preview_box)
-        pb_layout.setContentsMargins(10, 20, 10, 10) # ការពារកុំឱ្យអក្សរចំណងជើងជាន់គ្នាជាមួយ Text Area
+        pb_layout.setContentsMargins(10, 20, 10, 10)
         
         self.monitor_log = QTextEdit()
         self.monitor_log.setReadOnly(True)
         self.monitor_log.setStyleSheet("background-color: #00243a; color: #00bcd4; border: none; font-size: 9.5pt;")
         pb_layout.addWidget(self.monitor_log)
-        right_panel.addWidget(preview_box, stretch=4) # កំណត់ Stretch ធំល្មម
+        right_panel.addWidget(preview_box, stretch=4)
 
-        # ប្រអប់ Subtitle ខាងក្រោម (កែសម្រួល CSS និង Margin ការពារការបាត់ចំណងជើង)
         sub_box = QGroupBox("Auto Subtitle Khmer Matrix")
         sub_box.setStyleSheet("QGroupBox { color: #00bcd4; font-weight: bold; font-size: 11pt; border: 1px solid #005b8f; margin-top: 10px; }")
         sb_layout = QVBoxLayout(sub_box)
-        sb_layout.setContentsMargins(10, 20, 10, 10) # ការពារកុំឱ្យអក្សរចំណងជើងជាន់គ្នាជាមួយ Table
+        sb_layout.setContentsMargins(10, 20, 10, 10)
         
-        self.sub_table = QTableWidget(0, 3)
-        self.sub_table.setHorizontalHeaderLabels(["Start", "End", "Text Structure"])
+        self.sub_table = QTableWidget(0, 4)
+        self.sub_table.setHorizontalHeaderLabels(["Start", "End", "Original Text", "Khmer Text"])
         self.sub_table.setStyleSheet("""
             QTableWidget { 
                 background-color: #00243a; 
@@ -367,7 +226,7 @@ class ToolVideoKH(QMainWindow):
         """)
         self.sub_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         sb_layout.addWidget(self.sub_table)
-        right_panel.addWidget(sub_box, stretch=3) # កំណត់ Stretch ឱ្យសមាមាត្រគ្នា
+        right_panel.addWidget(sub_box, stretch=3)
 
         workspace_layout.addLayout(right_panel, stretch=2)
         main_layout.addLayout(workspace_layout)
@@ -397,6 +256,8 @@ class ToolVideoKH(QMainWindow):
         pbd_layout.addWidget(self.lbl_progress_percent)
         main_layout.addWidget(progress_bar_dock)
 
+        self.select_pipeline_mode("TTS Only")
+
     def bind_events(self):
         self.btn_add_top.clicked.connect(self.action_import_videos)
         self.btn_choose.clicked.connect(self.action_import_videos)
@@ -406,12 +267,17 @@ class ToolVideoKH(QMainWindow):
         self.btn_play.clicked.connect(self.play_video)
         self.btn_stop.clicked.connect(self.stop_video)
         
-        self.btn_translate_top.clicked.connect(self.action_start_translation_only)
-        self.btn_batch_top.clicked.connect(self.action_start_batch_export)
+        self.btn_translate_top.clicked.connect(self.action_translate_text)
+        self.btn_recognize.clicked.connect(self.action_recognize_voice)
         self.btn_export_video.clicked.connect(self.action_export_single_video)
         self.btn_cancel_task.clicked.connect(self.action_stop_task)
         
         self.cb_setting.currentIndexChanged.connect(self.action_setting_changed)
+
+        # Bind Pipeline Mix Buttons
+        self.btn_tts_only.clicked.connect(lambda: self.select_pipeline_mode("TTS Only"))
+        self.btn_tts_orig.clicked.connect(lambda: self.select_pipeline_mode("TTS + Original Music"))
+        self.btn_tts_vocal.clicked.connect(lambda: self.select_pipeline_mode("TTS + Vocal Music"))
 
     # -------------------------------------------------------------
     # LOGIC FUNCTIONS INTERACTION
@@ -438,12 +304,7 @@ class ToolVideoKH(QMainWindow):
                 file_path = custom_widget.file_path
                 self.media_player.setSource(QUrl.fromLocalFile(file_path))
                 self.monitor_log.append(f"[PLAYER] បានជ្រើសរើសវីដេអូ: {os.path.basename(file_path)}")
-                
                 self.sub_table.setRowCount(0)
-                self.sub_table.insertRow(0)
-                self.sub_table.setItem(0, 0, QTableWidgetItem("00:00:01"))
-                self.sub_table.setItem(0, 1, QTableWidgetItem("00:00:10"))
-                self.sub_table.setItem(0, 2, QTableWidgetItem("ប្រព័ន្ធ AI រៀបចំរួចរាល់សម្រាប់បកប្រែជាភាសាខ្មែរ"))
 
     def play_video(self):
         self.media_player.play()
@@ -468,52 +329,173 @@ class ToolVideoKH(QMainWindow):
     # -------------------------------------------------------------
     # THREAD RUNNERS (REAL EXECUTION)
     # -------------------------------------------------------------
-    def run_translation_engine(self, mode="Export Single"):
-        if not self.video_list_paths:
-            QMessageBox.warning(self, "Warning", "សូមជ្រើសរើស ឬបញ្ចូលវីដេអូទៅក្នុងប្រព័ន្ធជាមុនសិន!")
+    def action_recognize_voice(self):
+        current_item = self.video_list_widget.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Warning", "សូមជ្រើសរើសវីដេអូពីបញ្ជីខាងឆ្វេងជាមុនសិន!")
             return
 
-        selected_videos = []
-        if mode == "Export Single":
-            current_item = self.video_list_widget.currentItem()
-            if not current_item:
-                QMessageBox.warning(self, "Warning", "សូមចុចជ្រើសរើស (Highlight) លើឈ្មោះវីដេអូណាមួយក្នុងបញ្ជីខាងឆ្វេងដើម្បី Export!")
-                return
-            custom_widget = self.video_list_widget.itemWidget(current_item)
-            selected_videos = [custom_widget.file_path]
-        else:
-            selected_videos = self.video_list_paths
+        custom_widget = self.video_list_widget.itemWidget(current_item)
+        video_path = custom_widget.file_path
 
-        self.btn_export_video.setEnabled(False)
-        self.btn_batch_top.setEnabled(False)
-        
-        gender = "Male" if "Male" in self.cb_voice.currentText() else "Female"
-        
-        self.worker_thread = RealVoiceTranslatorWorker(selected_videos, self.output_directory, gender, mode)
+        self.set_buttons_enabled(False)
+        self.sub_table.setRowCount(0)
+
+        lang_map = {
+            "Original: English": "en-US",
+            "Original: Chinese": "zh-CN",
+            "Original: Thai": "th-TH",
+            "Original: Vietnamese": "vi-VN",
+            "Original: French": "fr-FR",
+            "Original: Spanish": "es-ES",
+            "Original: Japanese": "ja-JP",
+            "Original: Korean": "ko-KR"
+        }
+        selected_lang_text = self.cb_source_lang.currentText()
+        source_lang = lang_map.get(selected_lang_text, "en-US")
+
+        self.worker_thread = ASRWorker(video_path, source_lang, self.output_directory)
         self.worker_thread.progress_signal.connect(self.update_ui_progress)
         self.worker_thread.status_signal.connect(self.update_ui_status)
         self.worker_thread.log_signal.connect(self.append_ui_log)
-        self.worker_thread.finished_signal.connect(self.on_engine_finished)
+        self.worker_thread.chunk_signal.connect(self.add_asr_chunk_row)
+        self.worker_thread.finished_signal.connect(self.on_asr_finished)
         self.worker_thread.start()
 
+    def add_asr_chunk_row(self, start, end, text):
+        row = self.sub_table.rowCount()
+        self.sub_table.insertRow(row)
+        
+        item_start = QTableWidgetItem(start)
+        item_start.setFlags(item_start.flags() | Qt.ItemIsEditable)
+        self.sub_table.setItem(row, 0, item_start)
+        
+        item_end = QTableWidgetItem(end)
+        item_end.setFlags(item_end.flags() | Qt.ItemIsEditable)
+        self.sub_table.setItem(row, 1, item_end)
+        
+        item_orig = QTableWidgetItem(text)
+        item_orig.setFlags(item_orig.flags() | Qt.ItemIsEditable)
+        self.sub_table.setItem(row, 2, item_orig)
+        
+        item_khmer = QTableWidgetItem("")
+        item_khmer.setFlags(item_khmer.flags() | Qt.ItemIsEditable)
+        self.sub_table.setItem(row, 3, item_khmer)
+
+    def on_asr_finished(self, success, message):
+        self.set_buttons_enabled(True)
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.lbl_proc_status.setText("ASR Completed")
+        else:
+            QMessageBox.critical(self, "Error / Stopped", message)
+            self.lbl_proc_status.setText("ASR Failed / Stopped")
+
+    def action_translate_text(self):
+        row_count = self.sub_table.rowCount()
+        if row_count == 0:
+            QMessageBox.warning(self, "Warning", "គ្មានអក្សរសម្រាប់បកប្រែទេ។ សូមដំណើរការ 'Auto Recognize Voice' ជាមុនសិន!")
+            return
+
+        rows_to_translate = []
+        for r in range(row_count):
+            item = self.sub_table.item(r, 2)
+            orig_text = item.text() if item else ""
+            rows_to_translate.append({'row_index': r, 'original_text': orig_text})
+
+        self.set_buttons_enabled(False)
+
+        self.worker_thread = TranslationWorker(rows_to_translate)
+        self.worker_thread.progress_signal.connect(self.update_ui_progress)
+        self.worker_thread.status_signal.connect(self.update_ui_status)
+        self.worker_thread.log_signal.connect(self.append_ui_log)
+        self.worker_thread.result_signal.connect(self.update_translation_row)
+        self.worker_thread.finished_signal.connect(self.on_translation_finished)
+        self.worker_thread.start()
+
+    def update_translation_row(self, row_idx, translated_text):
+        item = QTableWidgetItem(translated_text)
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
+        self.sub_table.setItem(row_idx, 3, item)
+
+    def on_translation_finished(self, success, message):
+        self.set_buttons_enabled(True)
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.lbl_proc_status.setText("Translation Completed")
+        else:
+            QMessageBox.critical(self, "Error / Stopped", message)
+            self.lbl_proc_status.setText("Translation Failed / Stopped")
+
     def action_export_single_video(self):
-        self.run_translation_engine(mode="Export Single")
+        current_item = self.video_list_widget.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Warning", "សូមជ្រើសរើសវីដេអូពីបញ្ជីខាងឆ្វេងជាមុនសិន!")
+            return
 
-    def action_start_batch_export(self):
-        self.run_translation_engine(mode="Batch All")
+        row_count = self.sub_table.rowCount()
+        if row_count == 0:
+            QMessageBox.warning(self, "Warning", "គ្មានទិន្នន័យចំណងជើងសម្រាប់បង្កើតសំឡេងខ្មែរទេ។ សូមប្រាកដថាអ្នកបានដំណើរការ Recognize និង Translate រួចរាល់!")
+            return
 
-    def action_start_translation_only(self):
-        self.monitor_log.append("[AI] កំពុងដំណើរការវិភាគអក្សរ និងសម្លេង...")
-        self.run_translation_engine(mode="Export Single")
+        custom_widget = self.video_list_widget.itemWidget(current_item)
+        video_path = custom_widget.file_path
+
+        def time_str_to_sec(time_str):
+            try:
+                parts = time_str.split(':')
+                if len(parts) == 3:
+                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                return 0.0
+            except:
+                return 0.0
+
+        subtitles_data = []
+        for r in range(row_count):
+            start_item = self.sub_table.item(r, 0)
+            end_item = self.sub_table.item(r, 1)
+            khmer_item = self.sub_table.item(r, 3)
+            
+            start_str = start_item.text() if start_item else "00:00:00"
+            end_str = end_item.text() if end_item else "00:00:00"
+            khmer_text = khmer_item.text() if khmer_item else ""
+            
+            subtitles_data.append({
+                'start_sec': time_str_to_sec(start_str),
+                'end_sec': time_str_to_sec(end_str),
+                'khmer_text': khmer_text
+            })
+
+        self.set_buttons_enabled(False)
+        gender = "Male" if "Male" in self.cb_voice.currentText() else "Female"
+
+        self.worker_thread = ExportWorker(
+            video_path=video_path,
+            output_dir=self.output_directory,
+            subtitles=subtitles_data,
+            pipeline_mode=self.pipeline_mode,
+            gender=gender
+        )
+        self.worker_thread.progress_signal.connect(self.update_ui_progress)
+        self.worker_thread.status_signal.connect(self.update_ui_status)
+        self.worker_thread.log_signal.connect(self.append_ui_log)
+        self.worker_thread.finished_signal.connect(self.on_export_finished)
+        self.worker_thread.start()
+
+    def on_export_finished(self, success, message):
+        self.set_buttons_enabled(True)
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.lbl_proc_status.setText("Export Completed")
+        else:
+            QMessageBox.critical(self, "Error / Stopped", message)
+            self.lbl_proc_status.setText("Export Failed / Stopped")
 
     def action_stop_task(self):
         if self.worker_thread and self.worker_thread.isRunning():
             self.worker_thread.stop()
             self.monitor_log.append("[SYSTEM] កំពុងផ្ញើបញ្ជាទៅកាន់ប្រព័ន្ធដើម្បីបញ្ឈប់...")
 
-    # -------------------------------------------------------------
-    # THREAD CALLBACKS
-    # -------------------------------------------------------------
     def update_ui_progress(self, val):
         self.global_progress.setValue(val)
         self.lbl_progress_percent.setText(f"{val}%")
@@ -524,17 +506,29 @@ class ToolVideoKH(QMainWindow):
     def append_ui_log(self, msg):
         self.monitor_log.append(msg)
 
-    def on_engine_finished(self, success, message):
-        self.btn_export_video.setEnabled(True)
-        self.btn_batch_top.setEnabled(True)
-        if success:
-            QMessageBox.information(self, "Success", message)
-            self.lbl_proc_status.setText("Export Completed")
-        else:
-            QMessageBox.critical(self, "Error / Stopped", message)
-            self.lbl_proc_status.setText("Failed / Stopped")
+    def select_pipeline_mode(self, mode):
+        self.pipeline_mode = mode
+        self.monitor_log.append(f"[SYSTEM] របៀបសំឡេងត្រូវបានផ្លាស់ប្តូរទៅជា: {mode}")
+        
+        active_style = "QPushButton { background-color: #00bcd4; color: black; font-weight: bold; border-radius: 4px; } QPushButton:hover { background-color: #00acc1; }"
+        normal_style = "QPushButton { background-color: #004369; color: white; border: 1px solid #006fa3; border-radius: 4px; } QPushButton:hover { background-color: #005b8f; }"
+        
+        self.btn_tts_only.setStyleSheet(active_style if mode == "TTS Only" else normal_style)
+        self.btn_tts_orig.setStyleSheet(active_style if mode == "TTS + Original Music" else normal_style)
+        self.btn_tts_vocal.setStyleSheet(active_style if mode == "TTS + Vocal Music" else normal_style)
+
+    def set_buttons_enabled(self, enabled):
+        self.btn_add_top.setEnabled(enabled)
+        self.btn_recognize.setEnabled(enabled)
+        self.btn_translate_top.setEnabled(enabled)
+        self.btn_export_video.setEnabled(enabled)
+        self.btn_choose.setEnabled(enabled)
+        self.btn_out_folder.setEnabled(enabled)
 
 if __name__ == "__main__":
+    # Allow Ctrl+C to terminate the application immediately
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    
     app = QApplication(sys.argv)
     window = ToolVideoKH()
     window.show()
